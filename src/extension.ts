@@ -1818,12 +1818,16 @@ export class Ext extends Ecs.System<ExtEvent> {
         }
 
         function displays_ready(): boolean {
-            for (let i = 0; i < global.display.get_n_monitors(); i += 1) {
+            const monitors = global.display.get_n_monitors()
+
+            if (monitors === 0) return false
+
+            for (let i = 0; i < monitors; i += 1) {
                 const display = global.display.get_monitor_geometry(i)
                 
                 if (!display) return false
 
-                if (display.width === 0 || display.height === 0) return false
+                if (display.width < 1 || display.height < 1) return false
             }
 
             return true
@@ -1837,6 +1841,8 @@ export class Ext extends Ecs.System<ExtEvent> {
                 this.register_fn(() => {
                     this.update_display_configuration(workareas_only)
                 })
+
+                this.workareas_update = null
             
                 return false
             })
@@ -1863,21 +1869,20 @@ export class Ext extends Ecs.System<ExtEvent> {
             }
         }
 
-        let updated = new Map()
         let changes = new Map()
 
-        if (!workareas_only) {
-            // Records which display's windows were moved to what new display's ID
-            for (const [entity, w] of this.windows.iter()) {
-                if (!w.actor_exists()) continue
+        // Records which display's windows were moved to what new display's ID
+        for (const [entity, w] of this.windows.iter()) {
+            if (!w.actor_exists()) continue
 
-                this.monitors.with(entity, ([mon,]) => {
-                    changes.set(mon, w.meta.get_monitor())
-                })
-            }
+            this.monitors.with(entity, ([mon,]) => {
+                changes.set(mon, w.meta.get_monitor())
+            })
         }
 
         // Fetch a new list of monitors
+        let updated = new Map()
+
         for (const monitor of layoutManager.monitors) {
             const mon = monitor as Monitor
 
@@ -1887,25 +1892,28 @@ export class Ext extends Ecs.System<ExtEvent> {
             updated.set(mon.index, { area, ws })
         }
 
-        if (workareas_only) {
+        if (this.displays.size === updated.size) {
             update_tiling()
-
             return
         }
 
+        if (utils.map_eq(this.displays, updated)) {
+            return
+        }
+
+        this.displays = updated
+
         if (this.displays_updating !== null) GLib.source_remove(this.displays_updating)
-        if (this.workareas_update !== null) GLib.source_remove(this.workareas_update)
+
+        if (this.workareas_update !== null) {
+            GLib.source_remove(this.workareas_update)
+            this.workareas_update = null
+        }
 
         // Delay actions in case of temporary connection loss
         this.displays_updating = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
             (() => {
                 if (!this.auto_tiler) return
-
-                if (utils.compare_maps(this.displays, updated)) {
-                    return
-                }
-
-                this.displays = updated
 
                 const forest = this.auto_tiler.forest
 
